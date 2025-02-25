@@ -7,7 +7,7 @@ import uuid
 from typing import List
 
 # Импорты, учитывая что класс и функции лежат на уровень выше:
-from copilot_service.conversation_manager_5 import get_multiagent_answer
+from ..conversation_manager_5 import get_multiagent_answer
 from ..class_MongoDB import DataStorageManager
 from ..get_chroma_document_ID import get_full_document
 from ..update_delete_document_ChromaDB import add_or_update_document, delete_document

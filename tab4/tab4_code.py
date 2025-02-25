@@ -19,7 +19,6 @@ from ..get_chroma_document_ID import get_full_documents
 
 # Функция для добавления/обновления документов в ChromaDB
 from ..update_delete_document_ChromaDB import add_or_update_document
-# (Убедитесь, что путь корректный: 'bot_control_panel.' - или другая структура проекта)
 
 
 def read_file_content(file_path: str) -> str:
@@ -86,16 +85,18 @@ def create_tab4():
         widgets_for_json = []
         MAX_OBJECTS = 100
 
+        # Создаём 100 рядов, в каждом — TextBox (интерактивный) и Checkbox
         for i in range(MAX_OBJECTS):
             with gr.Row(visible=False) as row:
-                tbox = gr.Textbox(label=f"JSON объект #{i+1}", interactive=False, lines=5)
+                # Ставим interactive=True, чтобы пользователь мог редактировать текст
+                tbox = gr.Textbox(label=f"JSON объект #{i+1}", interactive=True, lines=5)
                 cbox = gr.Checkbox(label="Выбрать", value=False)
             textboxes.append(tbox)
             checkboxes.append(cbox)
             widgets_for_json.append(row)
 
         # ---------------------------------------------------------------------
-        # Новая функция для анализа Q/A и противоречий
+        # Функция для анализа Q/A и противоречий
         # ---------------------------------------------------------------------
         def analyze_qa_object(obj: Dict[str, Any]) -> str:
             """
@@ -269,6 +270,10 @@ def create_tab4():
                 )
 
             # Возвращаем: 4 значения
+            # 1) Статус,
+            # 2) Собственно JSON (response_json_data),
+            # 3) Видимость рядов,
+            # 4) Доп. копия (необязательно, но так сделан код).
             return status_msg, response_json, updates_for_rows, response_json
 
         # ---------------------------------------------------------------------
@@ -284,21 +289,28 @@ def create_tab4():
                     # Преобразуем сам JSON-объект в строку
                     obj_str = json.dumps(response_json_data[i], indent=2, ensure_ascii=False)
 
-                    # Новый шаг: анализируем question/answer
+                    # Анализируем question/answer
                     analysis_str = analyze_qa_object(response_json_data[i])
 
-                    # Записываем всё в один Textbox
+                    # Запишем всё в один TextBox
                     combined_output = (
                         f"{obj_str}\n\n"
                         f"=== Результат анализа ===\n"
                         f"{analysis_str}"
                     )
+                    # Если не хотим каждый раз перезаписывать, можем убрать value=...
                     textboxes_updates.append(gr.update(value=combined_output, visible=True))
                 else:
                     textboxes_updates.append(gr.update(value="", visible=False))
 
+            # Возвращаем: 
+            # 1) status_msg, 
+            # 2) response_json_data (сохраняем в State), 
+            # 3) Установки для row (видимость), 
+            # 4) Установки для textboxes (value и visible)
             return [status_msg, response_json_data] + rows_visibility + textboxes_updates
 
+        # Кликаем — вызываем call_chatbot_enhanced, выводим в текстовые блоки
         process_button.click(
             fn=call_chatbot_enhanced,
             inputs=[file_input_chat],
@@ -316,20 +328,30 @@ def create_tab4():
         confirm_result = gr.Textbox(label="Результат подтверждения", interactive=False)
 
         # ---------------------------------------------------------------------
-        # Новая логика в confirm_selection - сохранение выбранных документов в ChromaDB
+        # Новая логика в confirm_selection - получить и сохранить 
+        # как выбранные объекты, так и пользовательские правки из TextBox
         # ---------------------------------------------------------------------
-        def confirm_selection(response_json, *checkbox_values):
+        def confirm_selection(response_json, *checkboxes_and_texts):
             print("[DEBUG] confirm_selection вызван.")
             if not response_json:
                 print("[DEBUG] Нет JSON для выбора.")
                 return "Нет данных для подтверждения."
 
+            # Первые 100 аргументов - значения чекбоксов
+            checkboxes_values = checkboxes_and_texts[:MAX_OBJECTS]
+            # Следующие 100 - строки из текстовых полей
+            textboxes_values  = checkboxes_and_texts[MAX_OBJECTS:]
+
             selected_objs = []
-            for obj, is_checked in zip(response_json, checkbox_values):
-                if is_checked:
+            for i, (obj, checked) in enumerate(zip(response_json, checkboxes_values)):
+                if checked:
+                    # Считываем текущее содержимое TextBox
+                    edited_text = textboxes_values[i]
+                    # Можно сохранить в поле "edited_text", если хотим
+                    obj["edited_text"] = edited_text
                     selected_objs.append(obj)
 
-            print("=== Выбранные объекты ===")
+            print("=== Выбранные объекты (с учётом правок) ===")
             print(json.dumps(selected_objs, ensure_ascii=False, indent=2))
             print("=== /конец ===")
 
@@ -337,33 +359,30 @@ def create_tab4():
             if not selected_objs:
                 return "Вы не выбрали ни одного объекта!"
 
-            # Сохраняем как новые документы (не используя исходный "id")
-            # чтобы ChromaDB сгенерировала свой doc_id
+            # Сохраняем в ChromaDB как новые документы
             for doc_data in selected_objs:
-                question = doc_data.get("question", "")
-                answer = doc_data.get("answer", "")
-                # Сформируем основной текст: в данном случае объединим вопрос+ответ
-                combined_text = f"Question: {question}\nAnswer: {answer}"
+                # Вместо (question + answer) используем то, что пользователь отредактировал
+                combined_text = doc_data["edited_text"]
 
-                # Метаданные (можно передать что угодно, напр. исходный id)
-                # doc_data.get("id") - это старый ID, мы его не используем как doc_id,
-                # но можем сохранить в метадате для справки
                 new_metadata = {
                     "original_id": doc_data.get("id", "no_id"),
-                    "source": "user_upload",  # или любая другая метка
+                    "source": "user_upload",  # любая ваша метка
                 }
 
-                # Вызываем add_or_update_document с doc_id=None
-                # => внутри функция сама вызовет get_next_doc_id()
                 add_or_update_document(
                     new_text=combined_text,
                     new_metadata=new_metadata,
-                    doc_id=None  # явно указываем, что не используем старый ID
+                    doc_id=None
                 )
 
             return f"Сохранено документов: {len(selected_objs)}"
 
-        inputs_to_confirm = [response_json_state] + checkboxes
+        # Входными данными на «Подтвердить выбор» теперь будут:
+        # 1) response_json_state
+        # 2) все чекбоксы
+        # 3) все текстовые поля
+        inputs_to_confirm = [response_json_state] + checkboxes + textboxes
+
         confirm_button.click(
             fn=confirm_selection,
             inputs=inputs_to_confirm,
